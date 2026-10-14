@@ -1,0 +1,43 @@
+Comprobaciones sobre los escenarios proporcionados
+Cada apartado comienza con una nueva ejecución y su fichero correspondiente.
+Los resultados dependen de seguir estas acciones en este orden.
+
+PARQUE INICIAL
+1. Avanzar al siguiente paso: paso 1, N1 tiene E1. Norte y Sur cumplen.
+2. Reparar N1: un paso pendiente, cero técnicos libres.
+3. Avanzar al siguiente paso: paso 2, N1 termina desactivado; S1 tiene E1.
+   Norte cumple; Sur incumple. Un técnico libre.
+4. Activar S2 y reparar S1: el parque vuelve a cumplir.
+5. Avanzar al siguiente paso: paso 3, S1 termina desactivado; S2 tiene desgaste 1.
+   N2 y N3 tienen desgaste 6. El parque cumple.
+
+PARQUE ESTABLE
+1. Consultar varias veces: paso 0 y desgaste 0, sin cambios.
+2. Orientar L1 a S: rechazado porque está activo.
+3. Orientar L2 a S: aceptado porque está desactivado.
+4. Desactivar L1: el área incumple; la simulación continúa.
+5. Activar L2: el área vuelve a cumplir.
+6. Avanzar al siguiente paso: L2 tiene desgaste 1; L1 conserva desgaste 0.
+
+AVERÍAS SIMULTÁNEAS
+1. Avanzar al siguiente paso: C1 y C2 se averían con E1. El área incumple.
+2. Reparar C1: aceptado. Reparar C2: rechazado, no hay técnicos libres.
+3. Volver a reparar C1: rechazado, ya está en reparación.
+4. Activar C3: el área vuelve a cumplir.
+5. Avanzar al siguiente paso: C1 termina desactivado; C2 sigue averiado; C3 tiene desgaste 2.
+6. Reparar C2: ahora se acepta.
+
+SEGUNDA AVERÍA
+1. Avanzar al paso 1: P1 se avería con E1.
+2. Reparar P1. Avanzar al paso 2: termina desactivado, desgaste 0.
+3. Activar P1. Avanzar al paso 3: desgaste 1.
+4. Avanzar al paso 4: segunda avería, E2.
+5. Reparar P1: dos pasos pendientes, cero técnicos libres.
+6. Avanzar al paso 5: sigue en reparación, un paso pendiente.
+7. Avanzar al paso 6: desactivado, desgaste 0, código vacío, un técnico libre.
+8. Consultar: averias_acumuladas conserva el valor 2; no se reinicia al reparar.
+
+OPERACIONES NO VÁLIDAS
+Probar un identificador inexistente, una orientación distinta de N/E/S/O,
+activar un averiado e iniciar reparación en un equipo sin avería.
+En todos los casos: rechazo sin cambiar estado, desgaste, tiempo ni recursos.
