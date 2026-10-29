@@ -3,6 +3,56 @@ import sys
 from parque import ParqueEolico
 
 
+def seleccionar_area(parque: ParqueEolico):
+    print("\nÁreas disponibles:")
+
+    for numero, area in enumerate(parque.areas, start=1):
+        print(f"{numero}) {area.nombre}")
+
+    seleccion = input("Seleccione un área: ").strip()
+
+    if not seleccion.isdigit():
+        print("Selección no válida")
+        return None
+
+    indice = int(seleccion) - 1
+
+    if indice < 0 or indice >= len(parque.areas):
+        print("Selección no válida")
+        return None
+
+    return parque.areas[indice]
+
+
+def seleccionar_aerogenerador(parque: ParqueEolico):
+    print("\nAerogeneradores disponibles:")
+
+    aerogeneradores = []
+
+    for area in parque.areas:
+        for aerogenerador in area.aerogeneradores:
+            aerogeneradores.append(aerogenerador)
+
+            print(
+                f"{len(aerogeneradores)}) "
+                f"{aerogenerador.identificador} - Área {area.nombre}"
+            )
+
+    seleccion = input("Seleccione un aerogenerador: ").strip()
+
+    if not seleccion.isdigit():
+        print("Selección no válida")
+        return None
+
+    indice = int(seleccion) - 1
+
+    if indice < 0 or indice >= len(aerogeneradores):
+        print("Selección no válida")
+        return None
+
+    return aerogeneradores[indice]
+
+
 def mostrar_aerogenerador(aerogenerador) -> None:
     """Muestra la información de un aerogenerador."""
     print(
@@ -51,20 +101,10 @@ def consultar_parque(parque: ParqueEolico) -> None:
 
 def consultar_area(parque: ParqueEolico) -> None:
     """Consulta un área concreta."""
-    nombre = input("Nombre del área: ").strip()
+    area = seleccionar_area(parque)
 
-    area_encontrada = None
-
-    for area in parque.areas:
-        if area.nombre == nombre:
-            area_encontrada = area
-            break
-
-    if area_encontrada is None:
-        print("Área inexistente")
+    if area is None:
         return
-
-    area = area_encontrada
 
     print(f"\n--- Área: {area.nombre} ---")
     print(f"Exigencia: {area.exigencia}")
@@ -83,14 +123,9 @@ def consultar_area(parque: ParqueEolico) -> None:
 
 def consultar_aerogenerador(parque: ParqueEolico) -> None:
     """Consulta un aerogenerador concreto."""
-    identificador = input(
-        "Identificador del aerogenerador: "
-    ).strip()
-
-    aerogenerador = parque.buscar_aerogenerador(identificador)
+    aerogenerador = seleccionar_aerogenerador(parque)
 
     if aerogenerador is None:
-        print("Aerogenerador inexistente")
         return
 
     print("\n--- Aerogenerador ---")
@@ -114,15 +149,12 @@ def consultar_aerogenerador(parque: ParqueEolico) -> None:
 
 def activar_aerogenerador(parque: ParqueEolico) -> None:
     """Intenta activar un aerogenerador."""
-    identificador = input(
-        "Identificador del aerogenerador: "
-    ).strip()
-
-    aerogenerador = parque.buscar_aerogenerador(identificador)
+    aerogenerador = seleccionar_aerogenerador(parque)
 
     if aerogenerador is None:
-        print("Aerogenerador inexistente")
         return
+
+    identificador = aerogenerador.identificador
 
     if parque.activar_aerogenerador(identificador):
         print(f"{identificador} activado correctamente")
@@ -135,15 +167,12 @@ def activar_aerogenerador(parque: ParqueEolico) -> None:
 
 def desactivar_aerogenerador(parque: ParqueEolico) -> None:
     """Intenta desactivar un aerogenerador."""
-    identificador = input(
-        "Identificador del aerogenerador: "
-    ).strip()
-
-    aerogenerador = parque.buscar_aerogenerador(identificador)
+    aerogenerador = seleccionar_aerogenerador(parque)
 
     if aerogenerador is None:
-        print("Aerogenerador inexistente")
         return
+
+    identificador = aerogenerador.identificador
 
     if parque.desactivar_aerogenerador(identificador):
         print(f"{identificador} desactivado correctamente")
@@ -156,19 +185,33 @@ def desactivar_aerogenerador(parque: ParqueEolico) -> None:
 
 def orientar_aerogenerador(parque: ParqueEolico) -> None:
     """Intenta cambiar la orientación de un aerogenerador."""
-    identificador = input(
-        "Identificador del aerogenerador: "
-    ).strip()
-
-    orientacion = input(
-        "Nueva orientación (N, E, S u O): "
-    ).strip()
-
-    aerogenerador = parque.buscar_aerogenerador(identificador)
+    aerogenerador = seleccionar_aerogenerador(parque)
 
     if aerogenerador is None:
-        print("Aerogenerador inexistente")
         return
+
+    identificador = aerogenerador.identificador
+
+    print("\nOrientaciones disponibles:")
+    print("1) Norte (N)")
+    print("2) Este (E)")
+    print("3) Sur (S)")
+    print("4) Oeste (O)")
+
+    seleccion = input("Seleccione una orientación: ").strip()
+
+    orientaciones = {
+        "1": "N",
+        "2": "E",
+        "3": "S",
+        "4": "O"
+    }
+
+    if seleccion not in orientaciones:
+        print("Orientación no válida")
+        return
+
+    orientacion = orientaciones[seleccion]
 
     if parque.orientar_aerogenerador(
         identificador,
@@ -179,31 +222,23 @@ def orientar_aerogenerador(parque: ParqueEolico) -> None:
             f"{orientacion}"
         )
     else:
-        if orientacion not in ("N", "E", "S", "O"):
-            print("Orientación no válida")
-        else:
-            print(
-                f"No se puede orientar {identificador}. "
-                "Debe estar DESACTIVADO"
-            )
+        print(
+            f"No se puede orientar {identificador}. "
+            "Debe estar DESACTIVADO"
+        )
 
 
 def reparar_aerogenerador(parque: ParqueEolico) -> None:
     """Intenta iniciar la reparación de un aerogenerador."""
-    identificador = input(
-        "Identificador del aerogenerador: "
-    ).strip()
-
-    aerogenerador = parque.buscar_aerogenerador(identificador)
+    aerogenerador = seleccionar_aerogenerador(parque)
 
     if aerogenerador is None:
-        print("Aerogenerador inexistente")
         return
 
+    identificador = aerogenerador.identificador
+
     if aerogenerador.estado != "AVERIADO":
-        print(
-            "El aerogenerador no está averiado"
-        )
+        print("El aerogenerador no está averiado")
         return
 
     if parque.tecnicos_disponibles() == 0:
@@ -212,7 +247,7 @@ def reparar_aerogenerador(parque: ParqueEolico) -> None:
 
     if parque.reparar_aerogenerador(identificador):
         print(
-            f"{identificador} pasa a EN_REPARACION"
+            f"{identificador}: reparación iniciada"
         )
         print(
             f"Pasos pendientes: "
