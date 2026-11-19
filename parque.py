@@ -2,7 +2,7 @@
 
 Puedes añadir métodos y atributos auxiliares. No uses input() en estas clases.
 Los NotImplementedError señalan trabajo pendiente; no son errores que debas
-capturar con try/except. Sustitúyelos por tu implementación.
+capturar con try/except. Sustitúyelos por tu implementación. HOLA HOLA HOLAAAA
 """
 from __future__ import annotations
 
