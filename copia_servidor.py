@@ -143,7 +143,7 @@ def manejar_cliente(sock_cliente: socket.socket, addr, parque: ParqueEolico):
                     if evento is not None:
                         evento.set()
 
-            print(f"\n{id_aerog} se ha desconectado.")
+            print(f"\n{id_aerog} se ha desconectado.\n")
 
         try:
             sock_cliente.close()
