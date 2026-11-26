@@ -1,12 +1,14 @@
 
+
 import socket
 import sys
 import threading
 from parque import ParqueEolico
 
+
 clientes_conectados = {}  # {identificador: socket_cliente}
 confirmaciones = {}       # {identificador: mensaje recibido}
-eventos_confirmacion = {} # {identificador: evento}
+eventos_confirmacion = {}  # {identificador: evento}
 lock_clientes = threading.Lock()
 
 
@@ -21,11 +23,15 @@ def enviar_linea(sock: socket.socket, mensaje: str):
 def recibir_linea(sock: socket.socket) -> str:
     """Recibe datos acumulando hasta el salto de línea."""
     buffer = b""
+
     while not buffer.endswith(b"\n"):
         chunk = sock.recv(1024)
+
         if not chunk:
             break
+
         buffer += chunk
+
     return buffer.decode("utf-8").strip()
 
 
@@ -58,22 +64,43 @@ def esperar_confirmacion(identificador: str, timeout=10):
         return confirmaciones.pop(identificador, None)
 
 
-def enviar_orden_y_esperar(sock, identificador, orden):
-    """Envía una orden y espera a que llegue su confirmación."""
-    if not preparar_confirmacion(identificador):
-        print("No se ha podido preparar la confirmación.")
+def notificar_aerogenerador(identificador: str, orden: str):
+    """
+    Envía la orden al terminal remoto y espera su confirmación.
+
+    La operación del parque ya se ha ejecutado antes de llamar a esta
+    función, por lo que la conexión remota solo sirve para informar.
+    """
+    with lock_clientes:
+        sock = clientes_conectados.get(identificador)
+
+    if sock is None:
         return None
 
-    try:
-        enviar_linea(sock, "ORDEN " + orden)
-    except OSError:
-        print("No se ha podido enviar la orden.")
+    if not preparar_confirmacion(identificador):
         return None
+
+    enviar_linea(sock, f"ORDEN {orden}")
 
     return esperar_confirmacion(identificador)
 
 
-def manejar_cliente(sock_cliente: socket.socket, addr, parque: ParqueEolico):
+def mostrar_confirmacion(identificador: str, orden: str):
+    """
+    Espera la confirmación y la muestra desde el hilo principal.
+    Así aparece debajo del resultado de la operación.
+    """
+    confirmacion = notificar_aerogenerador(identificador, orden)
+
+    if confirmacion:
+        print(f"Confirmación recibida de {identificador}.")
+
+
+def manejar_cliente(
+    sock_cliente: socket.socket,
+    addr,
+    parque: ParqueEolico
+):
     """Atiende de forma concurrente a un aerogenerador conectado."""
     id_aerog = None
 
@@ -88,7 +115,10 @@ def manejar_cliente(sock_cliente: socket.socket, addr, parque: ParqueEolico):
         id_aerog = linea.split(" ", 1)[1].strip()
 
         if not parque.buscar_aerogenerador(id_aerog):
-            enviar_linea(sock_cliente, f"RECHAZADO {id_aerog} desconocido")
+            enviar_linea(
+                sock_cliente,
+                f"RECHAZADO {id_aerog} desconocido"
+            )
             sock_cliente.close()
             return
 
@@ -123,7 +153,8 @@ def manejar_cliente(sock_cliente: socket.socket, addr, parque: ParqueEolico):
                         confirmaciones[id_aerog] = msg
                         evento.set()
 
-                print(f"\nConfirmación recibida de {id_aerog}.\n")
+                # No imprimimos aquí la confirmación.
+                # La imprime el hilo principal debajo de la acción.
 
     except (OSError, UnicodeDecodeError):
         pass
@@ -134,14 +165,14 @@ def manejar_cliente(sock_cliente: socket.socket, addr, parque: ParqueEolico):
                 if clientes_conectados.get(id_aerog) == sock_cliente:
                     del clientes_conectados[id_aerog]
 
-                    confirmaciones.pop(id_aerog, None)
+                confirmaciones.pop(id_aerog, None)
 
-                    evento = eventos_confirmacion.pop(id_aerog, None)
+                evento = eventos_confirmacion.pop(id_aerog, None)
 
-                    # Despierta al menú si el cliente se desconecta
-                    # mientras el servidor está esperando.
-                    if evento is not None:
-                        evento.set()
+                # Despierta al menú si el cliente se desconecta
+                # mientras el servidor está esperando.
+                if evento is not None:
+                    evento.set()
 
             print(f"\n{id_aerog} se ha desconectado.\n")
 
@@ -151,7 +182,10 @@ def manejar_cliente(sock_cliente: socket.socket, addr, parque: ParqueEolico):
             pass
 
 
-def aceptar_conexiones(server_socket: socket.socket, parque: ParqueEolico):
+def aceptar_conexiones(
+    server_socket: socket.socket,
+    parque: ParqueEolico
+):
     """Hilo para aceptar conexiones entrantes en bucle."""
     while True:
         try:
@@ -177,7 +211,9 @@ def seleccionar_area(parque: ParqueEolico):
 
     sel = input("Seleccione un área: ").strip()
 
-    if not sel.isdigit() or not (1 <= int(sel) <= len(parque.areas)):
+    if not sel.isdigit() or not (
+        1 <= int(sel) <= len(parque.areas)
+    ):
         print("Selección no válida")
         return None
 
@@ -207,7 +243,9 @@ def seleccionar_aerogenerador(parque: ParqueEolico):
 
     sel = input("Seleccione un aerogenerador: ").strip()
 
-    if not sel.isdigit() or not (1 <= int(sel) <= len(aerogs)):
+    if not sel.isdigit() or not (
+        1 <= int(sel) <= len(aerogs)
+    ):
         print("Selección no válida")
         return None
 
@@ -216,7 +254,10 @@ def seleccionar_aerogenerador(parque: ParqueEolico):
 
 def main():
     if len(sys.argv) != 3:
-        print("Uso: python3 servidor.py <puerto> <fichero_configuracion>")
+        print(
+            "Uso: python3 servidor.py "
+            "<puerto> <fichero_configuracion>"
+        )
         sys.exit(1)
 
     puerto = int(sys.argv[1])
@@ -228,8 +269,15 @@ def main():
         print(f"Error al cargar el escenario: {e}")
         sys.exit(1)
 
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server_socket = socket.socket(
+        socket.AF_INET,
+        socket.SOCK_STREAM
+    )
+    server_socket.setsockopt(
+        socket.SOL_SOCKET,
+        socket.SO_REUSEADDR,
+        1
+    )
 
     try:
         server_socket.bind(("0.0.0.0", puerto))
@@ -253,17 +301,25 @@ def main():
         with lock_clientes:
             num_remotos = len(clientes_conectados)
 
-        total_aerog = sum(len(a.aerogeneradores) for a in parque.areas)
+        total_aerog = sum(
+            len(a.aerogeneradores)
+            for a in parque.areas
+        )
 
         print(
             f"Control remoto disponible: "
             f"{num_remotos}/{total_aerog} aerogeneradores"
         )
 
-        print(f"Técnicos disponibles: {parque.tecnicos_disponibles()}")
+        print(
+            f"Técnicos disponibles: "
+            f"{parque.tecnicos_disponibles()}"
+        )
         print(
             "Servicio:",
-            "CUMPLE" if parque.cumple_servicio() else "INSUFICIENTE"
+            "CUMPLE"
+            if parque.cumple_servicio()
+            else "INSUFICIENTE"
         )
 
         print("1) Consultar parque")
@@ -305,7 +361,9 @@ def main():
                 )
                 print(
                     "  Servicio:",
-                    "CUMPLE" if area.cumple_servicio() else "INSUFICIENTE"
+                    "CUMPLE"
+                    if area.cumple_servicio()
+                    else "INSUFICIENTE"
                 )
 
                 for ag in area.aerogeneradores:
@@ -317,8 +375,8 @@ def main():
                         )
 
                     print(
-                        f"  {ag.identificador} | {ag.estado} | {remoto} | "
-                        f"orientación {ag.orientacion} | "
+                        f"  {ag.identificador} | {ag.estado} | "
+                        f"{remoto} | orientación {ag.orientacion} | "
                         f"desgaste {ag.desgaste}/{ag.umbral}"
                     )
 
@@ -334,7 +392,9 @@ def main():
                 )
                 print(
                     "Servicio:",
-                    "CUMPLE" if area.cumple_servicio() else "INSUFICIENTE"
+                    "CUMPLE"
+                    if area.cumple_servicio()
+                    else "INSUFICIENTE"
                 )
 
                 for ag in area.aerogeneradores:
@@ -346,8 +406,8 @@ def main():
                         )
 
                     print(
-                        f"  {ag.identificador} | {ag.estado} | {remoto} | "
-                        f"orientación {ag.orientacion} | "
+                        f"  {ag.identificador} | {ag.estado} | "
+                        f"{remoto} | orientación {ag.orientacion} | "
                         f"desgaste {ag.desgaste}/{ag.umbral}"
                     )
 
@@ -374,59 +434,47 @@ def main():
             if not ag:
                 continue
 
-            # Comprobar si tiene control remoto conectado.
-            with lock_clientes:
-                sock = clientes_conectados.get(ag.identificador)
+            identificador = ag.identificador
 
-            if not sock:
-                print(
-                    f"Orden rechazada: {ag.identificador} "
-                    "no tiene conexión remota."
-                )
-                continue
-
-            # Mapeo de órdenes.
+            # Activar aerogenerador
             if opcion == "4":
-                resp = enviar_orden_y_esperar(
-                    sock,
-                    ag.identificador,
-                    "ACTIVAR"
-                )
-
-                if resp in (
-                    "CONFIRMADO ORDEN ACTIVAR",
-                    "CONFIRMADO ACTIVAR"
-                ):
-                    if parque.activar_aerogenerador(ag.identificador):
-                        print(f"{ag.identificador}: activado.")
-                    else:
-                        print("No se pudo activar según las reglas.")
+                if parque.activar_aerogenerador(identificador):
+                    print(f"{identificador}: activado.")
+                    mostrar_confirmacion(
+                        identificador,
+                        "ACTIVAR"
+                    )
                 else:
-                    print("El cliente no confirmó la orden correctamente.")
+                    print("No se pudo activar según las reglas.")
 
+            # Desactivar aerogenerador
             elif opcion == "5":
-                resp = enviar_orden_y_esperar(
-                    sock,
-                    ag.identificador,
-                    "DESACTIVAR"
+                if parque.desactivar_aerogenerador(identificador):
+                    print(f"{identificador}: desactivado.")
+                    mostrar_confirmacion(
+                        identificador,
+                        "DESACTIVAR"
+                    )
+                else:
+                    print("No se pudo desactivar según las reglas.")
+
+            # Orientar aerogenerador
+            elif opcion == "6":
+                print(
+                    "Orientaciones: "
+                    "1) N, 2) E, 3) S, 4) O"
                 )
 
-                if resp in (
-                    "CONFIRMADO ORDEN DESACTIVAR",
-                    "CONFIRMADO DESACTIVAR"
-                ):
-                    if parque.desactivar_aerogenerador(ag.identificador):
-                        print(f"{ag.identificador}: desactivado.")
-                    else:
-                        print("No se pudo desactivar según las reglas.")
-                else:
-                    print("El cliente no confirmó la orden.")
+                d_sel = input(
+                    "Seleccione orientación: "
+                ).strip()
 
-            elif opcion == "6":
-                print("Orientaciones: 1) N, 2) E, 3) S, 4) O")
-
-                d_sel = input("Seleccione orientación: ").strip()
-                dirs = {"1": "N", "2": "E", "3": "S", "4": "O"}
+                dirs = {
+                    "1": "N",
+                    "2": "E",
+                    "3": "S",
+                    "4": "O"
+                }
 
                 if d_sel not in dirs:
                     print("Orientación no válida")
@@ -434,23 +482,19 @@ def main():
 
                 d = dirs[d_sel]
 
-                resp = enviar_orden_y_esperar(
-                    sock,
-                    ag.identificador,
-                    f"ORIENTAR {d}"
-                )
-
-                if resp in (
-                    f"CONFIRMADO ORDEN ORIENTAR {d}",
-                    f"CONFIRMADO ORIENTAR {d}"
+                if parque.orientar_aerogenerador(
+                    identificador,
+                    d
                 ):
-                    if parque.orientar_aerogenerador(ag.identificador, d):
-                        print(f"{ag.identificador} orientado a {d}.")
-                    else:
-                        print("No se pudo orientar.")
+                    print(f"{identificador} orientado a {d}.")
+                    mostrar_confirmacion(
+                        identificador,
+                        f"ORIENTAR {d}"
+                    )
                 else:
-                    print("El cliente no confirmó la orden.")
+                    print("No se pudo orientar.")
 
+            # Iniciar reparación
             elif opcion == "7":
                 if ag.estado != "AVERIADO":
                     print("El aerogenerador no está averiado.")
@@ -460,22 +504,14 @@ def main():
                     print("No hay técnicos disponibles.")
                     continue
 
-                resp = enviar_orden_y_esperar(
-                    sock,
-                    ag.identificador,
-                    "INICIAR_REPARACION"
-                )
-
-                if resp in (
-                    "CONFIRMADO ORDEN INICIAR_REPARACION",
-                    "CONFIRMADO INICIAR_REPARACION"
-                ):
-                    if parque.reparar_aerogenerador(ag.identificador):
-                        print(f"{ag.identificador}: reparación iniciada.")
-                    else:
-                        print("No se pudo iniciar la reparación.")
+                if parque.reparar_aerogenerador(identificador):
+                    print(f"{identificador}: reparación iniciada.")
+                    mostrar_confirmacion(
+                        identificador,
+                        "INICIAR_REPARACION"
+                    )
                 else:
-                    print("El cliente no confirmó la orden.")
+                    print("No se pudo iniciar la reparación.")
 
         elif opcion == "8":
             avisos = parque.avanzar_paso()
