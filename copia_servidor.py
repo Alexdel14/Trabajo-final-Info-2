@@ -1,115 +1,116 @@
-
 import socket
 import sys
 import threading
 from parque import ParqueEolico
 
-
-clientes_conectados = {}  # {identificador: socket_cliente}
-confirmaciones = {}       # {identificador: mensaje recibido}
-eventos_confirmacion = {}  # {identificador: evento}
-lock_clientes = threading.Lock()
+clientes_conectados = {}
+confirmaciones = {}
+eventos_confirmacion = {}
+ordenes_pendientes = {}
 notificaciones = []
 
+lock_clientes = threading.Lock()
 
-def enviar_linea(sock: socket.socket, mensaje: str):
+TIEMPO_ESPERA = 10
+
+
+def enviar_linea(sock: socket.socket, mensaje: str) -> bool:
     """Envía un mensaje UTF-8 terminado en salto de línea."""
     try:
         sock.sendall((mensaje + "\n").encode("utf-8"))
-    except OSError:
-        pass
-
-
-def recibir_linea(sock: socket.socket) -> str:
-    """Recibe datos acumulando hasta el salto de línea."""
-    buffer = b""
-
-    while not buffer.endswith(b"\n"):
-        chunk = sock.recv(1024)
-
-        if not chunk:
-            break
-
-        buffer += chunk
-
-    return buffer.decode("utf-8").strip()
-
-
-def preparar_confirmacion(identificador: str) -> bool:
-    """Prepara el evento antes de enviar una orden."""
-    with lock_clientes:
-        evento = eventos_confirmacion.get(identificador)
-
-        if evento is None:
-            return False
-
-        confirmaciones.pop(identificador, None)
-        evento.clear()
-
         return True
+    except OSError:
+        return False
 
 
-def esperar_confirmacion(identificador: str, timeout=10):
-    """Espera la confirmación sin leer directamente del socket."""
+def recibir_linea(flujo):
+    """Recibe una línea completa conservando los datos posteriores."""
+    linea = flujo.readline()
+
+    if not linea:
+        return None
+
+    return linea.rstrip("\r\n")
+
+
+def anadir_notificacion(mensaje: str):
+    """Añade una notificación para que la muestre el hilo principal."""
+    with lock_clientes:
+        notificaciones.append(mensaje)
+
+
+def mostrar_notificaciones():
+    """Muestra las notificaciones pendientes sin interrumpir el menú."""
+    with lock_clientes:
+        pendientes = list(notificaciones)
+        notificaciones.clear()
+
+    for mensaje in pendientes:
+        print(f"\n{mensaje}")
+
+
+def esperar_confirmacion(identificador: str, orden: str) -> bool:
+    """Espera la confirmación exacta de una orden."""
     with lock_clientes:
         evento = eventos_confirmacion.get(identificador)
 
     if evento is None:
-        return None
+        return False
 
-    if not evento.wait(timeout):
-        return None
+    recibida = evento.wait(TIEMPO_ESPERA)
 
     with lock_clientes:
-        return confirmaciones.pop(identificador, None)
+        confirmacion = confirmaciones.pop(identificador, None)
+
+        if ordenes_pendientes.get(identificador) == orden:
+            ordenes_pendientes.pop(identificador, None)
+
+    if not recibida:
+        return False
+
+    return confirmacion == f"CONFIRMADO {orden}"
 
 
-def notificar_aerogenerador(identificador: str, orden: str):
-    """
-    Envía la orden al terminal remoto y espera su confirmación.
-
-    La operación del parque ya se ha ejecutado antes de llamar a esta
-    función, por lo que la conexión remota solo sirve para informar.
-    """
+def enviar_orden_y_esperar(identificador: str, orden: str) -> bool:
+    """Envía una orden al cliente y espera su confirmación."""
     with lock_clientes:
         sock = clientes_conectados.get(identificador)
+        evento = eventos_confirmacion.get(identificador)
 
-    if sock is None:
-        return None
+        if sock is None or evento is None:
+            return False
 
-    if not preparar_confirmacion(identificador):
-        return None
+        confirmaciones.pop(identificador, None)
+        ordenes_pendientes[identificador] = orden
+        evento.clear()
 
-    enviar_linea(sock, f"ORDEN {orden}")
+    if not enviar_linea(sock, f"ORDEN {orden}"):
+        with lock_clientes:
+            if ordenes_pendientes.get(identificador) == orden:
+                ordenes_pendientes.pop(identificador, None)
+        return False
 
-    return esperar_confirmacion(identificador)
-
-
-def mostrar_confirmacion(identificador: str, orden: str):
-    """
-    Espera la confirmación y la muestra desde el hilo principal.
-    Así aparece debajo del resultado de la operación.
-    """
-    confirmacion = notificar_aerogenerador(identificador, orden)
-
-    if confirmacion:
-        print(f"Confirmación recibida de {identificador}.")
+    return esperar_confirmacion(identificador, orden)
 
 
-def manejar_cliente(
-    sock_cliente: socket.socket,
-    addr,
-    parque: ParqueEolico
-):
-    """Atiende de forma concurrente a un aerogenerador conectado."""
+def cliente_conectado(identificador: str) -> bool:
+    """Comprueba si un aerogenerador tiene un cliente conectado."""
+    with lock_clientes:
+        return identificador in clientes_conectados
+
+
+def manejar_cliente(sock_cliente: socket.socket, addr, parque: ParqueEolico):
+    """Atiende a un cliente remoto."""
     id_aerog = None
+    flujo = None
 
     try:
-        linea = recibir_linea(sock_cliente)
+        flujo = sock_cliente.makefile("r", encoding="utf-8")
 
-        if not linea.startswith("CONECTAR "):
+        linea = recibir_linea(flujo)
+
+        if linea is None or not linea.startswith("CONECTAR "):
             enviar_linea(sock_cliente, "RECHAZADO")
-            sock_cliente.close()
             return
 
         id_aerog = linea.split(" ", 1)[1].strip()
@@ -119,7 +120,6 @@ def manejar_cliente(
                 sock_cliente,
                 f"RECHAZADO {id_aerog} desconocido"
             )
-            sock_cliente.close()
             return
 
         with lock_clientes:
@@ -128,57 +128,63 @@ def manejar_cliente(
                     sock_cliente,
                     f"RECHAZADO {id_aerog} ya conectado"
                 )
-                sock_cliente.close()
                 return
 
             clientes_conectados[id_aerog] = sock_cliente
             confirmaciones.pop(id_aerog, None)
             eventos_confirmacion[id_aerog] = threading.Event()
 
-        enviar_linea(sock_cliente, "ACEPTADO")
-        with lock_clientes:
-            notificaciones.append(
-                f"{id_aerog} conectado correctamente."
-            )
+        if not enviar_linea(sock_cliente, "ACEPTADO"):
+            return
 
-        # Este hilo es el único que recibe mensajes del aerogenerador.
+        anadir_notificacion(
+            f"{id_aerog} conectado correctamente."
+        )
+
         while True:
-            msg = recibir_linea(sock_cliente)
+            msg = recibir_linea(flujo)
 
-            if not msg or msg == "DESCONECTAR":
+            if msg is None or msg == "DESCONECTAR":
                 break
 
             if msg.startswith("CONFIRMADO "):
                 with lock_clientes:
+                    orden_esperada = ordenes_pendientes.get(id_aerog)
                     evento = eventos_confirmacion.get(id_aerog)
 
-                    if evento is not None:
+                    if (
+                        orden_esperada is not None
+                        and msg == f"CONFIRMADO {orden_esperada}"
+                        and evento is not None
+                    ):
                         confirmaciones[id_aerog] = msg
                         evento.set()
 
-                # No imprimimos aquí la confirmación.
-                # La imprime el hilo principal debajo de la acción.
-
-    except (OSError, UnicodeDecodeError):
+    except (OSError, UnicodeDecodeError, ValueError):
         pass
 
     finally:
-        if id_aerog:
+        if flujo is not None:
+            try:
+                flujo.close()
+            except OSError:
+                pass
+
+        if id_aerog is not None:
             with lock_clientes:
                 if clientes_conectados.get(id_aerog) == sock_cliente:
                     del clientes_conectados[id_aerog]
+                    notificaciones.append(
+                        f"{id_aerog} se ha desconectado."
+                    )
 
                 confirmaciones.pop(id_aerog, None)
+                ordenes_pendientes.pop(id_aerog, None)
 
                 evento = eventos_confirmacion.pop(id_aerog, None)
 
-                # Despierta al menú si el cliente se desconecta
-                # mientras el servidor está esperando.
                 if evento is not None:
                     evento.set()
-
-            with lock_clientes:
-                notificaciones.append(f"\n{id_aerog} se ha desconectado.\n")
 
         try:
             sock_cliente.close()
@@ -186,20 +192,8 @@ def manejar_cliente(
             pass
 
 
-def mostrar_notificaciones():
-    with lock_clientes:
-        pendientes = list(notificaciones)
-        notificaciones.clear()
-
-    for mensaje in pendientes:
-        print(f"\n{mensaje}")
-
-
-def aceptar_conexiones(
-    server_socket: socket.socket,
-    parque: ParqueEolico
-):
-    """Hilo para aceptar conexiones entrantes en bucle."""
+def aceptar_conexiones(server_socket: socket.socket, parque: ParqueEolico):
+    """Hilo encargado de aceptar conexiones entrantes."""
     while True:
         try:
             client_socket, addr = server_socket.accept()
@@ -217,6 +211,7 @@ def aceptar_conexiones(
 
 
 def seleccionar_area(parque: ParqueEolico):
+    """Permite seleccionar un área del parque."""
     print("\nÁreas disponibles:")
 
     for i, area in enumerate(parque.areas, start=1):
@@ -224,9 +219,7 @@ def seleccionar_area(parque: ParqueEolico):
 
     sel = input("Seleccione un área: ").strip()
 
-    if not sel.isdigit() or not (
-        1 <= int(sel) <= len(parque.areas)
-    ):
+    if not sel.isdigit() or not (1 <= int(sel) <= len(parque.areas)):
         print("Selección no válida")
         return None
 
@@ -234,6 +227,7 @@ def seleccionar_area(parque: ParqueEolico):
 
 
 def seleccionar_aerogenerador(parque: ParqueEolico):
+    """Permite seleccionar un aerogenerador del parque."""
     print("\nAerogeneradores disponibles:")
 
     aerogs = []
@@ -242,12 +236,11 @@ def seleccionar_aerogenerador(parque: ParqueEolico):
         for ag in area.aerogeneradores:
             aerogs.append(ag)
 
-            with lock_clientes:
-                remoto = (
-                    "CONTROL REMOTO DISPONIBLE"
-                    if ag.identificador in clientes_conectados
-                    else "SIN CONEXIÓN REMOTA"
-                )
+            remoto = (
+                "CONTROL REMOTO DISPONIBLE"
+                if cliente_conectado(ag.identificador)
+                else "SIN CONEXIÓN REMOTA"
+            )
 
             print(
                 f"{len(aerogs)}) {ag.identificador} "
@@ -256,13 +249,91 @@ def seleccionar_aerogenerador(parque: ParqueEolico):
 
     sel = input("Seleccione un aerogenerador: ").strip()
 
-    if not sel.isdigit() or not (
-        1 <= int(sel) <= len(aerogs)
-    ):
+    if not sel.isdigit() or not (1 <= int(sel) <= len(aerogs)):
         print("Selección no válida")
         return None
 
     return aerogs[int(sel) - 1]
+
+
+def ejecutar_operacion_remota(
+    ag,
+    orden: str,
+    condicion,
+    operacion,
+    mensaje_exito: str
+):
+    """Comprueba las reglas, espera confirmación y modifica el parque."""
+    identificador = ag.identificador
+
+    if not cliente_conectado(identificador):
+        print(
+            f"{identificador}: operación rechazada. "
+            "SIN CONEXIÓN REMOTA."
+        )
+        return
+
+    if not condicion():
+        print("No se puede realizar la operación según las reglas.")
+        return
+
+    if not enviar_orden_y_esperar(identificador, orden):
+        print(
+            f"{identificador}: operación fallida. "
+            "No se ha recibido una confirmación válida."
+        )
+        return
+
+    print(f"Confirmación recibida de {identificador}.")
+
+    if operacion():
+        print(mensaje_exito)
+    else:
+        print(
+            f"{identificador}: no se pudo aplicar la operación "
+            "en el parque."
+        )
+
+
+def cerrar_servidor(server_socket: socket.socket):
+    """Cierra ordenadamente las conexiones y el servidor."""
+    with lock_clientes:
+        conexiones = list(clientes_conectados.items())
+
+    for identificador, sock in conexiones:
+        enviar_linea(sock, "SERVIDOR_CIERRA")
+
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+        with lock_clientes:
+            if clientes_conectados.get(identificador) == sock:
+                del clientes_conectados[identificador]
+                notificaciones.append(
+                    f"{identificador} se ha desconectado."
+                )
+
+            confirmaciones.pop(identificador, None)
+            ordenes_pendientes.pop(identificador, None)
+
+            evento = eventos_confirmacion.pop(identificador, None)
+
+            if evento is not None:
+                evento.set()
+
+    mostrar_notificaciones()
+
+    try:
+        server_socket.close()
+    except OSError:
+        pass
 
 
 def main():
@@ -273,7 +344,17 @@ def main():
         )
         sys.exit(1)
 
-    puerto = int(sys.argv[1])
+    try:
+        puerto = int(sys.argv[1])
+
+        if not 1 <= puerto <= 65535:
+            print("Error: el puerto debe estar entre 1 y 65535.")
+            sys.exit(1)
+
+    except ValueError:
+        print("Error: el puerto debe ser un número entero.")
+        sys.exit(1)
+
     parque = ParqueEolico()
 
     try:
@@ -286,6 +367,7 @@ def main():
         socket.AF_INET,
         socket.SOCK_STREAM
     )
+
     server_socket.setsockopt(
         socket.SOL_SOCKET,
         socket.SO_REUSEADDR,
@@ -295,13 +377,15 @@ def main():
     try:
         server_socket.bind(("0.0.0.0", puerto))
         server_socket.listen(5)
-    except Exception as e:
+
+    except OSError as e:
         print(f"No se pudo iniciar el servidor: {e}")
+        server_socket.close()
         sys.exit(1)
 
-    mostrar_notificaciones()
-
-    print(f"Centro de control iniciado en el puerto {puerto}.")
+    print(
+        f"Centro de control iniciado en el puerto {puerto}."
+    )
 
     threading.Thread(
         target=aceptar_conexiones,
@@ -310,6 +394,8 @@ def main():
     ).start()
 
     while True:
+        mostrar_notificaciones()
+
         print("\n=== Centro de control del parque eólico ===")
         print(f"Paso: {parque.paso_actual}")
 
@@ -317,8 +403,8 @@ def main():
             num_remotos = len(clientes_conectados)
 
         total_aerog = sum(
-            len(a.aerogeneradores)
-            for a in parque.areas
+            len(area.aerogeneradores)
+            for area in parque.areas
         )
 
         print(
@@ -330,6 +416,7 @@ def main():
             f"Técnicos disponibles: "
             f"{parque.tecnicos_disponibles()}"
         )
+
         print(
             "Servicio:",
             "CUMPLE"
@@ -347,28 +434,21 @@ def main():
         print("8) Avanzar al siguiente paso")
         print("0) Cerrar centro de control")
 
-        opcion = input("> ").strip()
+        try:
+            opcion = input("> ").strip()
+
+        except KeyboardInterrupt:
+            print("\nCtrl+C recibido. Cerrando el centro de control...")
+
+            cerrar_servidor(server_socket)
+
+            print("Servidor cerrado correctamente.")
+            break
 
         mostrar_notificaciones()
 
         if opcion == "0":
-            with lock_clientes:
-                conexiones = list(clientes_conectados.items())
-
-            for ident, sock in conexiones:
-                try:
-                    enviar_linea(sock, "SERVIDOR_CIERRA")
-                    sock.close()
-                except OSError:
-                    pass
-
-                with lock_clientes:
-                    notificaciones.append(
-                        f"{ident} se ha desconectado."
-            )
-
-            mostrar_notificaciones()
-            server_socket.close()
+            cerrar_servidor(server_socket)
             print("\nApagando servidor...")
             break
 
@@ -378,10 +458,12 @@ def main():
             for area in parque.areas:
                 print(f"\nÁrea {area.nombre}")
                 print(f"  Exigencia: {area.exigencia}")
+
                 print(
                     f"  Activos: {area.contar_activos()}/"
                     f"{area.minimo_activos} requeridos"
                 )
+
                 print(
                     "  Servicio:",
                     "CUMPLE"
@@ -390,12 +472,11 @@ def main():
                 )
 
                 for ag in area.aerogeneradores:
-                    with lock_clientes:
-                        remoto = (
-                            "CONTROL REMOTO DISPONIBLE"
-                            if ag.identificador in clientes_conectados
-                            else "SIN CONEXIÓN REMOTA"
-                        )
+                    remoto = (
+                        "CONTROL REMOTO DISPONIBLE"
+                        if cliente_conectado(ag.identificador)
+                        else "SIN CONEXIÓN REMOTA"
+                    )
 
                     print(
                         f"  {ag.identificador} | {ag.estado} | "
@@ -409,10 +490,12 @@ def main():
             if area:
                 print(f"\n--- Área {area.nombre} ---")
                 print(f"Exigencia: {area.exigencia}")
+
                 print(
                     f"Activos: {area.contar_activos()}/"
                     f"{area.minimo_activos} requeridos"
                 )
+
                 print(
                     "Servicio:",
                     "CUMPLE"
@@ -421,12 +504,11 @@ def main():
                 )
 
                 for ag in area.aerogeneradores:
-                    with lock_clientes:
-                        remoto = (
-                            "CONTROL REMOTO DISPONIBLE"
-                            if ag.identificador in clientes_conectados
-                            else "SIN CONEXIÓN REMOTA"
-                        )
+                    remoto = (
+                        "CONTROL REMOTO DISPONIBLE"
+                        if cliente_conectado(ag.identificador)
+                        else "SIN CONEXIÓN REMOTA"
+                    )
 
                     print(
                         f"  {ag.identificador} | {ag.estado} | "
@@ -438,14 +520,15 @@ def main():
             ag = seleccionar_aerogenerador(parque)
 
             if ag:
-                with lock_clientes:
-                    remoto = (
-                        "CONTROL REMOTO DISPONIBLE"
-                        if ag.identificador in clientes_conectados
-                        else "SIN CONEXIÓN REMOTA"
-                    )
+                remoto = (
+                    "CONTROL REMOTO DISPONIBLE"
+                    if cliente_conectado(ag.identificador)
+                    else "SIN CONEXIÓN REMOTA"
+                )
 
-                print(f"\n--- Aerogenerador {ag.identificador} ---")
+                print(
+                    f"\n--- Aerogenerador {ag.identificador} ---"
+                )
                 print(f"Estado: {ag.estado}")
                 print(f"Control remoto: {remoto}")
                 print(f"Orientación: {ag.orientacion}")
@@ -459,29 +542,24 @@ def main():
 
             identificador = ag.identificador
 
-            # Activar aerogenerador
             if opcion == "4":
-                if parque.activar_aerogenerador(identificador):
-                    print(f"{identificador}: activado.")
-                    mostrar_confirmacion(
-                        identificador,
-                        "ACTIVAR"
-                    )
-                else:
-                    print("No se pudo activar según las reglas.")
+                ejecutar_operacion_remota(
+                    ag,
+                    "ACTIVAR",
+                    lambda: ag.estado == "DESACTIVADO",
+                    lambda: parque.activar_aerogenerador(identificador),
+                    f"{identificador}: activado."
+                )
 
-            # Desactivar aerogenerador
             elif opcion == "5":
-                if parque.desactivar_aerogenerador(identificador):
-                    print(f"{identificador}: desactivado.")
-                    mostrar_confirmacion(
-                        identificador,
-                        "DESACTIVAR"
-                    )
-                else:
-                    print("No se pudo desactivar según las reglas.")
+                ejecutar_operacion_remota(
+                    ag,
+                    "DESACTIVAR",
+                    lambda: ag.estado == "ACTIVO",
+                    lambda: parque.desactivar_aerogenerador(identificador),
+                    f"{identificador}: desactivado."
+                )
 
-            # Orientar aerogenerador
             elif opcion == "6":
                 print(
                     "Orientaciones: "
@@ -505,19 +583,20 @@ def main():
 
                 d = dirs[d_sel]
 
-                if parque.orientar_aerogenerador(
-                    identificador,
-                    d
-                ):
-                    print(f"{identificador} orientado a {d}.")
-                    mostrar_confirmacion(
+                ejecutar_operacion_remota(
+                    ag,
+                    f"ORIENTAR {d}",
+                    lambda: (
+                        ag.estado == "DESACTIVADO"
+                        and d in ("N", "E", "S", "O")
+                    ),
+                    lambda: parque.orientar_aerogenerador(
                         identificador,
-                        f"ORIENTAR {d}"
-                    )
-                else:
-                    print("No se pudo orientar.")
+                        d
+                    ),
+                    f"{identificador} orientado a {d}."
+                )
 
-            # Iniciar reparación
             elif opcion == "7":
                 if ag.estado != "AVERIADO":
                     print("El aerogenerador no está averiado.")
@@ -527,18 +606,28 @@ def main():
                     print("No hay técnicos disponibles.")
                     continue
 
-                if parque.reparar_aerogenerador(identificador):
-                    print(f"{identificador}: reparación iniciada.")
-                    mostrar_confirmacion(
-                        identificador,
-                        "INICIAR_REPARACION"
-                    )
-                else:
-                    print("No se pudo iniciar la reparación.")
+                if ag.codigo_averia not in ("E1", "E2"):
+                    print("No se puede reparar esta avería.")
+                    continue
+
+                ejecutar_operacion_remota(
+                    ag,
+                    "INICIAR_REPARACION",
+                    lambda: (
+                        ag.estado == "AVERIADO"
+                        and parque.tecnicos_disponibles() > 0
+                        and ag.codigo_averia in ("E1", "E2")
+                    ),
+                    lambda: parque.reparar_aerogenerador(identificador),
+                    f"{identificador}: reparación iniciada."
+                )
 
         elif opcion == "8":
             avisos = parque.avanzar_paso()
-            print(f"\nPaso {parque.paso_actual} completado")
+
+            print(
+                f"\nPaso {parque.paso_actual} completado"
+            )
 
             if avisos:
                 for aviso in avisos:
@@ -549,12 +638,19 @@ def main():
                     with lock_clientes:
                         sock = clientes_conectados.get(ident)
 
-                    if sock:
-                        enviar_linea(sock, f"AVISO {aviso}")
+                    if sock is not None:
+                        if not enviar_linea(sock, f"AVISO {aviso}"):
+                            try:
+                                sock.shutdown(socket.SHUT_RDWR)
+                            except OSError:
+                                pass
+
             else:
                 print("No se han producido nuevas incidencias.")
+
+        else:
+            print("Opción no válida.")
 
 
 if __name__ == "__main__":
     main()
-
