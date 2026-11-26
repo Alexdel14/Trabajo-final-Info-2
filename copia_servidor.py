@@ -1,5 +1,4 @@
 
-
 import socket
 import sys
 import threading
@@ -10,6 +9,7 @@ clientes_conectados = {}  # {identificador: socket_cliente}
 confirmaciones = {}       # {identificador: mensaje recibido}
 eventos_confirmacion = {}  # {identificador: evento}
 lock_clientes = threading.Lock()
+notificaciones = []
 
 
 def enviar_linea(sock: socket.socket, mensaje: str):
@@ -136,7 +136,10 @@ def manejar_cliente(
             eventos_confirmacion[id_aerog] = threading.Event()
 
         enviar_linea(sock_cliente, "ACEPTADO")
-        print(f"\n{id_aerog} conectado correctamente.")
+        with lock_clientes:
+            notificaciones.append(
+                f"{id_aerog} conectado correctamente."
+            )
 
         # Este hilo es el único que recibe mensajes del aerogenerador.
         while True:
@@ -174,12 +177,22 @@ def manejar_cliente(
                 if evento is not None:
                     evento.set()
 
-            print(f"\n{id_aerog} se ha desconectado.\n")
+            with lock_clientes:
+                notificaciones.append(f"\n{id_aerog} se ha desconectado.\n")
 
         try:
             sock_cliente.close()
         except OSError:
             pass
+
+
+def mostrar_notificaciones():
+    with lock_clientes:
+        pendientes = list(notificaciones)
+        notificaciones.clear()
+
+    for mensaje in pendientes:
+        print(f"\n{mensaje}")
 
 
 def aceptar_conexiones(
@@ -286,6 +299,8 @@ def main():
         print(f"No se pudo iniciar el servidor: {e}")
         sys.exit(1)
 
+    mostrar_notificaciones()
+
     print(f"Centro de control iniciado en el puerto {puerto}.")
 
     threading.Thread(
@@ -334,6 +349,8 @@ def main():
 
         opcion = input("> ").strip()
 
+        mostrar_notificaciones()
+
         if opcion == "0":
             with lock_clientes:
                 conexiones = list(clientes_conectados.items())
@@ -345,6 +362,12 @@ def main():
                 except OSError:
                     pass
 
+                with lock_clientes:
+                    notificaciones.append(
+                        f"{ident} se ha desconectado."
+            )
+
+            mostrar_notificaciones()
             server_socket.close()
             print("\nApagando servidor...")
             break
@@ -534,3 +557,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
